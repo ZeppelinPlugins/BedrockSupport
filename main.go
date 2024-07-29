@@ -36,16 +36,18 @@ func (p *Plugin) OnLoad(srv *server.Server) {
 	p.srv = srv
 
 	go func() {
-		if p.closed {
-			return
+		for {
+			if p.closed {
+				return
+			}
+			c, err := listener.Accept()
+			if err != nil {
+				log.Errorlnf("Zeppelin Bedrock Support: error listening: %v", err)
+				return
+			}
+			conn := c.(*minecraft.Conn)
+			go session.HandleNewConn(p.srv, conn)
 		}
-		c, err := listener.Accept()
-		if err != nil {
-			log.Errorlnf("Zeppelin Bedrock Support: error listening: %v", err)
-			return
-		}
-		conn := c.(*minecraft.Conn)
-		go session.HandleNewConn(p.srv, conn)
 	}()
 }
 

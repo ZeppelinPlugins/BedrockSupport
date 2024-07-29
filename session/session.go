@@ -17,6 +17,7 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+	"github.com/zeppelinmc/zeppelin/atomic"
 	"github.com/zeppelinmc/zeppelin/log"
 	"github.com/zeppelinmc/zeppelin/net/metadata"
 	"github.com/zeppelinmc/zeppelin/net/packet/login"
@@ -71,6 +72,11 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 		},
 	})
 
+	session.conn.WritePacket(&packet.PlayerSkin{
+		UUID: session.uuid,
+		Skin: session.skin(),
+	})
+
 	session.initializeCommands()
 
 	srv.Broadcast.AddPlayer(session)
@@ -97,6 +103,12 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 			handleAnimate(session, pk)
 		case *packet.CommandRequest:
 			session.srv.CommandManager.Call(pk.CommandLine[1:], session)
+		case *packet.Interact:
+			handleInteract(session, pk)
+		case *packet.ContainerClose:
+			if pk.WindowID == 0 {
+				session.inInv.Set(false)
+			}
 		default:
 			log.Printlnf("0x%02x %T", p.ID(), p)
 		}
@@ -109,6 +121,8 @@ type BedrockSession struct {
 	srv          *server.Server
 	uuid         uuid.UUID
 	skinProperty login.Property
+
+	inInv atomic.AtomicValue[bool]
 
 	spawnedEntities []int32
 	spawned_ents_mu sync.Mutex
@@ -140,7 +154,7 @@ func (session *BedrockSession) DespawnEntities(ids ...int32) error {
 }
 
 func (session *BedrockSession) Disconnect(reason text.TextComponent) error {
-	if err := session.conn.WritePacket(&packet.Disconnect{Message: reason.Text}); err != nil {
+	if err := session.conn.WritePacket(&packet.Disconnect{Message: text.Marshal(reason, '§')}); err != nil {
 		return err
 	}
 	return session.conn.Close()
@@ -247,26 +261,39 @@ func (session *BedrockSession) PlayerInfoUpdate(pk *play.PlayerInfoUpdate) error
 	if pk.Actions&play.ActionAddPlayer == 0 {
 		return nil
 	}
-	var entries = make([]protocol.PlayerListEntry, 0, len(pk.Players))
+	var entries = make([]protocol.PlayerListEntry, 1, len(pk.Players)+1)
+	entries[0] = protocol.PlayerListEntry{
+		UUID:           session.uuid,
+		Username:       session.Username(),
+		EntityUniqueID: int64(session.Player().EntityId()),
+		Skin:           session.skin(),
+		XUID:           session.conn.IdentityData().XUID,
+	}
 
 	for uuid, player := range pk.Players {
-		if uuid == session.uuid {
-			continue
-		}
 		ses, ok := session.srv.Broadcast.AsyncSession(uuid)
 		if !ok {
 			continue
 		}
-		var skin protocol.Skin
-		txt, err := ses.Textures()
-		if err == nil {
-			skin, _ = texturesToSkin(txt)
+		var (
+			xuid string
+			skin protocol.Skin
+		)
+		if bs, ok := ses.(*BedrockSession); !ok {
+			txt, err := ses.Textures()
+			if err == nil {
+				skin, _ = texturesToSkin(txt)
+			}
+		} else {
+			xuid = bs.conn.IdentityData().XUID
+			skin = bs.skin()
 		}
 		entries = append(entries, protocol.PlayerListEntry{
 			UUID:           uuid,
 			Username:       player.Name,
 			EntityUniqueID: int64(ses.Player().EntityId()),
 			Skin:           skin,
+			XUID:           xuid,
 		})
 	}
 
