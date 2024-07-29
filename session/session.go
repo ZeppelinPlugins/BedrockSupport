@@ -71,6 +71,8 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 		},
 	})
 
+	session.initializeCommands()
+
 	srv.Broadcast.AddPlayer(session)
 	srv.Broadcast.SpawnPlayer(session)
 
@@ -415,6 +417,24 @@ func (session *BedrockSession) Username() string {
 
 func (session *BedrockSession) UpdateTime(int64, int64) error {
 	return nil
+}
+
+func (session *BedrockSession) initializeCommands() {
+	graph := session.srv.CommandManager.Encode()
+
+	commands := make([]protocol.Command, 0, len(graph.Nodes)-1)
+
+	for _, node := range graph.Nodes {
+		if node.Flags&play.NodeType == play.NodeLiteral {
+			commands = append(commands, protocol.Command{
+				Name: node.Name,
+			})
+		}
+	}
+
+	session.conn.WritePacket(&packet.AvailableCommands{
+		Commands: commands,
+	})
 }
 
 var _ session.Session = (*BedrockSession)(nil)
