@@ -1,12 +1,13 @@
-module aetherbedrocksupport
+module zeppelinbedrocksupport
 
-replace github.com/dynamitemc/aether => ../
+replace github.com/zeppelinmc/zeppelin => ../aether
 
 go 1.22.2
 
-require github.com/dynamitemc/aether v0.0.0-20240715233545-8cf5ec16c10c
+require github.com/zeppelinmc/zeppelin v0.0.0-20240715233545-8cf5ec16c10
 
 require (
+	github.com/aquilax/go-perlin v1.1.0 // indirect
 	github.com/fatih/color v1.17.0 // indirect
 	github.com/go-gl/mathgl v1.1.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.3 // indirect

@@ -2,13 +2,12 @@ package world
 
 import (
 	"bytes"
-	"encoding/binary"
+	"sync"
 
-	"github.com/dynamitemc/aether/server/world/region"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
+	"github.com/zeppelinmc/zeppelin/server/world/region"
 )
 
-func chunkBlocks(chunk *region.Chunk, sec int) []Block {
+/*func chunkBlocks(chunk *region.Chunk, sec int) []Block {
 	section := chunk.Sections[sec]
 	bitsPerEntry := (int32(len(section.BlockStates.Data)) * 64) / 4096
 	var blocks = make([]Block, 0, 4096)
@@ -27,11 +26,30 @@ func chunkBlocks(chunk *region.Chunk, sec int) []Block {
 	}
 
 	return blocks
+}*/
+
+var chunkDataPool = sync.Pool{
+	New: func() any { return bytes.NewBuffer(nil) },
 }
 
 func EncodeChunkData(chunk *region.Chunk) []byte {
-	w := bytes.NewBuffer(nil)
-	for i := range chunk.Sections {
+	w := chunkDataPool.Get().(*bytes.Buffer)
+	w.Reset()
+	defer chunkDataPool.Put(w)
+
+	for i := 0; i < 24; i++ {
+		blocksPerWord := byte(1)
+		w.WriteByte(1 | (blocksPerWord << 1))
+
+		for j := 0; j < 1024; j++ {
+			w.Write([]byte{
+				255, 255, 255, 255,
+			})
+		}
+		w.WriteByte(1)
+		w.WriteByte(7)
+	}
+	/*for i := range chunk.Sections {
 		blocksPerWord := byte(16)
 		w.WriteByte(1 | (blocksPerWord << 1))
 
@@ -61,7 +79,7 @@ func EncodeChunkData(chunk *region.Chunk) []byte {
 		for _, e := range palette {
 			protocol.WriteVarint32(w, int32(e))
 		}
-	}
+	}*/
 	return w.Bytes()
 }
 

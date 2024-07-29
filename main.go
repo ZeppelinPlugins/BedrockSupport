@@ -1,11 +1,11 @@
 package main
 
 import (
-	"aetherbedrocksupport/session"
+	"zeppelinbedrocksupport/session"
 
-	"github.com/dynamitemc/aether/log"
-	"github.com/dynamitemc/aether/server"
 	"github.com/sandertv/gophertunnel/minecraft"
+	"github.com/zeppelinmc/zeppelin/log"
+	"github.com/zeppelinmc/zeppelin/server"
 )
 
 const (
@@ -18,20 +18,20 @@ type Plugin struct {
 }
 
 func (p *Plugin) OnLoad(srv *server.Server) {
-	log.Infolnf("Aether Bedrock Support version %s", VERSION)
+	log.Infolnf("Zeppelin Bedrock Support version %s", VERSION)
 
 	srvConf := srv.Config()
 
 	cfg := minecraft.ListenConfig{
-		StatusProvider: minecraft.NewStatusProvider("Aether", srvConf.MOTD),
+		StatusProvider: minecraft.NewStatusProvider("Zeppelin", srvConf.MOTD),
 	}
 
 	listener, err := cfg.Listen("raknet", ":19132")
 	if err != nil {
-		log.Errorlnf("Aether Bedrock Support: error listening: %v", err)
+		log.Errorlnf("Zeppelin Bedrock Support: error listening: %v", err)
 		return
 	}
-	log.Infolnf("Aether Bedrock Support: listening on %s", listener.Addr())
+	log.Infolnf("Zeppelin Bedrock Support: listening on %s", listener.Addr())
 
 	p.srv = srv
 
@@ -41,7 +41,7 @@ func (p *Plugin) OnLoad(srv *server.Server) {
 		}
 		c, err := listener.Accept()
 		if err != nil {
-			log.Errorlnf("Aether Bedrock Support: error listening: %v", err)
+			log.Errorlnf("Zeppelin Bedrock Support: error listening: %v", err)
 			return
 		}
 		conn := c.(*minecraft.Conn)
@@ -59,4 +59,4 @@ func (*Plugin) Identifier() string {
 
 var _ server.Plugin = (*Plugin)(nil)
 
-var AetherPluginExport = Plugin{}
+var ZeppelinPluginExport = Plugin{}

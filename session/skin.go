@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/dynamitemc/aether/net/packet/login"
+	"github.com/zeppelinmc/zeppelin/net/packet/login"
 )
 
 func getSkin(xuid string) (login.Property, error) {

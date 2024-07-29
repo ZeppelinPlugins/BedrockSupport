@@ -1,31 +1,42 @@
 package session
 
 import (
-	"aetherbedrocksupport/world"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/png"
+	"math"
 	"net"
+	"net/http"
 	"sync"
+	"zeppelinbedrocksupport/world"
 
-	"github.com/dynamitemc/aether/chat"
-	"github.com/dynamitemc/aether/log"
-	"github.com/dynamitemc/aether/net/packet/login"
-	"github.com/dynamitemc/aether/net/packet/play"
-	"github.com/dynamitemc/aether/server"
-	"github.com/dynamitemc/aether/server/player"
-	"github.com/dynamitemc/aether/server/session"
-	"github.com/dynamitemc/aether/util"
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+	"github.com/zeppelinmc/zeppelin/log"
+	"github.com/zeppelinmc/zeppelin/net/metadata"
+	"github.com/zeppelinmc/zeppelin/net/packet/login"
+	"github.com/zeppelinmc/zeppelin/net/packet/play"
+	"github.com/zeppelinmc/zeppelin/server"
+	"github.com/zeppelinmc/zeppelin/server/config"
+	"github.com/zeppelinmc/zeppelin/server/entity"
+	"github.com/zeppelinmc/zeppelin/server/player"
+	"github.com/zeppelinmc/zeppelin/server/session"
+	"github.com/zeppelinmc/zeppelin/server/world/region"
+	"github.com/zeppelinmc/zeppelin/text"
+	"github.com/zeppelinmc/zeppelin/util"
 )
 
 func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 	id := srv.NewEntityId()
 
-	player := player.NewPlayer(id)
-
 	uuid, _ := uuid.Parse(conn.IdentityData().Identity)
+
+	player := player.NewPlayer(id, srv.World.NewPlayerData(uuid))
 
 	session := &BedrockSession{
 		conn:   conn,
@@ -36,13 +47,21 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 
 	session.skinProperty, _ = getSkin(session.conn.IdentityData().XUID)
 
-	session.sendWorldData()
+	x, y, z := player.Position()
+	yaw, pitch := player.Rotation()
+
+	//session.sendWorldData()
 
 	conn.StartGame(minecraft.GameData{
 		WorldName:       "Server",
 		EntityUniqueID:  int64(id),
-		PlayerGameMode:  1,
+		PlayerGameMode:  int32(player.GameMode()),
 		EntityRuntimeID: uint64(id),
+		WorldSeed:       int64(srv.World.Data.WorldGenSettings.Seed),
+		Hardcore:        srv.World.Data.Hardcore,
+		PlayerPosition:  mgl32.Vec3{float32(x), float32(y), float32(z)},
+		Yaw:             yaw,
+		Pitch:           pitch,
 		GameRules: []protocol.GameRule{
 			{
 				Name:                  "showcoordinates",
@@ -56,12 +75,36 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 	srv.Broadcast.SpawnPlayer(session)
 
 	for {
-		pk, err := conn.ReadPacket()
+		p, err := conn.ReadPacket()
 		if err != nil {
 			srv.Broadcast.RemovePlayer(session)
 			return
 		}
-		log.Printlnf("0x%02x %T", pk.ID(), pk)
+		switch pk := p.(type) {
+		case *packet.Text:
+			srv.Broadcast.DisguisedChatMessage(session, text.TextComponent{Text: pk.Message})
+		case *packet.MovePlayer:
+			x, y, z := float64(pk.Position.X()), float64(pk.Position.Y()), float64(pk.Position.Z())
+			yaw, pitch := pk.Yaw, pk.Pitch
+			srv.Broadcast.BroadcastPlayerMovement(session, x, y, z, yaw, pitch)
+			session.player.SetPosition(x, y, z)
+			session.player.SetRotation(yaw, pitch)
+		case *packet.Animate:
+			var animation byte
+			switch pk.ActionType {
+			case packet.AnimateActionSwingArm:
+				animation = play.AnimationSwingMainArm
+			case packet.AnimateActionStopSleep:
+				animation = play.AnimationLeaveBed
+			case packet.AnimateActionCriticalHit:
+				animation = play.AnimationCriticalEffect
+			case packet.AnimateActionMagicCriticalHit:
+				animation = play.AnimationMagicCriticalEffect
+			}
+			srv.Broadcast.Animation(session, animation)
+		default:
+			log.Printlnf("0x%02x %T", p.ID(), p)
+		}
 	}
 }
 
@@ -80,8 +123,16 @@ func (session *BedrockSession) Addr() net.Addr {
 	return session.conn.RemoteAddr()
 }
 
+func (session *BedrockSession) Dimension() *region.Dimension {
+	return session.srv.World.Dimension(session.player.Dimension())
+}
+
 func (session *BedrockSession) ClientName() string {
 	return "vanilla-bedrock"
+}
+
+func (session *BedrockSession) Config() config.ServerConfig {
+	return session.srv.Config()
 }
 
 func (session *BedrockSession) DespawnEntities(ids ...int32) error {
@@ -93,7 +144,7 @@ func (session *BedrockSession) DespawnEntities(ids ...int32) error {
 	return nil
 }
 
-func (session *BedrockSession) Disconnect(reason chat.TextComponent) error {
+func (session *BedrockSession) Disconnect(reason text.TextComponent) error {
 	if err := session.conn.WritePacket(&packet.Disconnect{Message: reason.Text}); err != nil {
 		return err
 	}
@@ -118,8 +169,26 @@ func (session *BedrockSession) EntityAnimation(entityId int32, animation byte) e
 	})
 }
 
-func (session *BedrockSession) EntityMetadata(entityId int32, metadata map[byte]any) error {
-	return nil
+func (session *BedrockSession) EntityMetadata(entityId int32, meta metadata.Metadata) error {
+	md := protocol.NewEntityMetadata()
+	base := meta[metadata.BaseIndex].(metadata.Byte)
+	if base&metadata.IsOnFire != 0 {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagOnFire)
+	}
+	if base&metadata.IsCrouching != 0 {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
+	}
+	if base&metadata.IsSprinting != 0 {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSprinting)
+	}
+	if base&metadata.IsSwimming != 0 {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSwimming)
+	}
+
+	return session.conn.WritePacket(&packet.SetActorData{
+		EntityRuntimeID: uint64(entityId),
+		EntityMetadata:  md,
+	})
 }
 
 func (session *BedrockSession) IsSpawned(entityId int32) bool {
@@ -137,8 +206,23 @@ func (session *BedrockSession) Player() *player.Player {
 	return session.player
 }
 
-func (session *BedrockSession) PlayerChatMessage(play.ChatMessage, session.Session, int32) error {
-	return nil
+func (session *BedrockSession) PlayerChatMessage(msg play.ChatMessage, sender session.Session, chatType string, index int32, prevMsgs []play.PreviousMessage) error {
+	return session.DisguisedChatMessage(text.TextComponent{Text: msg.Message}, sender, chatType)
+}
+
+func (session *BedrockSession) DisguisedChatMessage(message text.TextComponent, sender session.Session, chatType string) error {
+	return session.conn.WritePacket(&packet.Text{
+		TextType:   packet.TextTypeChat,
+		SourceName: sender.Username(),
+		Message:    message.Text,
+	})
+}
+
+func (session *BedrockSession) SystemMessage(message text.TextComponent) error {
+	return session.conn.WritePacket(&packet.Text{
+		TextType: packet.TextTypeRaw,
+		Message:  message.Text,
+	})
 }
 
 func (session *BedrockSession) PlayerInfoRemove(uuids ...uuid.UUID) error {
@@ -158,21 +242,27 @@ func (session *BedrockSession) PlayerInfoRemove(uuids ...uuid.UUID) error {
 func (session *BedrockSession) sendWorldData() {
 	viewDistance := int32(12)
 
-	for x := -viewDistance; x < viewDistance; x++ {
-		for z := -viewDistance; z < viewDistance; z++ {
-			c, _ := session.srv.World.GetChunk(x, z)
+	//dim := session.Dimension()
+
+	x, _, z := session.player.Position()
+
+	chunkX, chunkZ := int32(math.Floor(x/16)), int32(math.Floor(z/16))
+
+	for x := chunkX - viewDistance; x < chunkX+viewDistance; x++ {
+		for z := chunkZ - viewDistance; z < chunkZ+viewDistance; z++ {
+			//c, _ := dim.GetChunk(x, z)
 
 			session.conn.WritePacket(&packet.LevelChunk{
 				Position:      [2]int32{x, z},
-				SubChunkCount: uint32(len(c.Sections)),
-				RawPayload:    world.EncodeChunkData(c),
+				SubChunkCount: 24,
+				RawPayload:    world.EncodeChunkData(nil),
 			})
 		}
 	}
 }
 
 func (session *BedrockSession) PlayerInfoUpdate(pk *play.PlayerInfoUpdate) error {
-	/*if pk.Actions&play.ActionAddPlayer == 0 {
+	if pk.Actions&play.ActionAddPlayer == 0 {
 		return nil
 	}
 	var entries = make([]protocol.PlayerListEntry, 0, len(pk.Players))
@@ -181,26 +271,65 @@ func (session *BedrockSession) PlayerInfoUpdate(pk *play.PlayerInfoUpdate) error
 		if uuid == session.uuid {
 			continue
 		}
-		ses, ok := session.srv.Broadcast.Session(uuid)
+		ses, ok := session.srv.Broadcast.AsyncSession(uuid)
 		if !ok {
 			continue
+		}
+		var skin protocol.Skin
+		txt, err := ses.Textures()
+		if err == nil {
+			skin, _ = texturesToSkin(txt)
 		}
 		entries = append(entries, protocol.PlayerListEntry{
 			UUID:           uuid,
 			Username:       player.Name,
 			EntityUniqueID: int64(ses.Player().EntityId()),
+			Skin:           skin,
 		})
 	}
 
 	return session.conn.WritePacket(&packet.PlayerList{
 		ActionType: packet.PlayerListActionAdd,
 		Entries:    entries,
-	})*/
-	return nil
+	})
 }
 
 func (session *BedrockSession) Properties() []login.Property {
 	return []login.Property{session.skinProperty}
+}
+
+func texturesToSkin(textures login.Textures) (protocol.Skin, error) {
+	var skin protocol.Skin
+	skinData, err := http.Get(textures.Textures.Skin.URL)
+	if err != nil {
+		return skin, err
+	}
+	skinImage, err := png.Decode(skinData.Body)
+	if err != nil {
+		return skin, err
+	}
+	img, ok := skinImage.(*image.NRGBA)
+	if !ok {
+		return skin, fmt.Errorf("bad skin image data")
+	}
+
+	w, h := skinImage.Bounds().Dx(), skinImage.Bounds().Dy()
+	skin.SkinImageWidth = uint32(w)
+	skin.SkinImageHeight = uint32(h)
+	skin.SkinData = img.Pix
+
+	return skin, nil
+}
+
+func (session *BedrockSession) Textures() (login.Textures, error) {
+	var textures login.Textures
+	property := session.skinProperty.Value
+	data, err := base64.StdEncoding.DecodeString(property)
+	if err != nil {
+		return textures, err
+	}
+	err = json.Unmarshal(data, &textures)
+	return textures, err
 }
 
 func (session *BedrockSession) SessionData() (play.PlayerSession, bool) {
@@ -221,20 +350,23 @@ func (session *BedrockSession) SpawnPlayer(ses session.Session) error {
 	})
 }
 
-func (session *BedrockSession) SpawnEntity(ent *play.SpawnEntity) error {
+func (session *BedrockSession) SpawnEntity(ent entity.Entity) error {
+	x, y, z := ent.Position()
+	yaw, pitch := ent.Rotation()
+	id := ent.EntityId()
 	return session.conn.WritePacket(&packet.AddActor{
-		EntityUniqueID:  int64(ent.EntityId),
-		EntityRuntimeID: uint64(ent.EntityId),
-		Position:        mgl32.Vec3{float32(ent.X), float32(ent.Y), float32(ent.Z)},
-		Pitch:           util.AngleToDegrees(ent.Pitch),
-		Yaw:             util.AngleToDegrees(ent.Yaw),
-		BodyYaw:         util.AngleToDegrees(ent.Yaw),
-		HeadYaw:         util.AngleToDegrees(ent.HeadYaw),
+		EntityUniqueID:  int64(id),
+		EntityRuntimeID: uint64(id),
+		Position:        mgl32.Vec3{float32(x), float32(y), float32(z)},
+		Pitch:           pitch,
+		Yaw:             yaw,
+		BodyYaw:         yaw,
+		HeadYaw:         yaw,
 	})
 
 }
 
-func (session *BedrockSession) Teleport(x, y, z float64, yaw, pitch float32) error {
+func (session *BedrockSession) SynchronizePosition(x, y, z float64, yaw, pitch float32) error {
 	return session.conn.WritePacket(&packet.MovePlayer{
 		EntityRuntimeID: uint64(session.player.EntityId()),
 		Position:        mgl32.Vec3{float32(x), float32(y), float32(z)},
@@ -250,20 +382,59 @@ func (session *BedrockSession) UUID() uuid.UUID {
 	return session.uuid
 }
 
-func (session *BedrockSession) UpdateEntityPosition(*play.UpdateEntityPosition) error {
-	return nil
+func (session *BedrockSession) UpdateEntityPosition(entity entity.Entity, pk *play.UpdateEntityPosition) error {
+	oldX, oldY, oldZ := entity.Position()
+	yaw, pitch := entity.Rotation()
+
+	newX := (float64(pk.DeltaX) + (oldX * 4096)) / 4096
+	newY := (float64(pk.DeltaZ) + (oldY * 4096)) / 4096
+	newZ := (float64(pk.DeltaZ) + (oldZ * 4096)) / 4096
+
+	return session.conn.WritePacket(&packet.MovePlayer{
+		EntityRuntimeID: uint64(entity.EntityId()),
+		Yaw:             yaw,
+		Pitch:           pitch,
+		HeadYaw:         yaw,
+		OnGround:        pk.OnGround,
+		Position:        mgl32.Vec3{float32(newX), float32(newY), float32(newZ)},
+	})
 }
 
-func (session *BedrockSession) UpdateEntityPositionRotation(*play.UpdateEntityPositionAndRotation) error {
-	return nil
+func (session *BedrockSession) UpdateEntityPositionRotation(entity entity.Entity, pk *play.UpdateEntityPositionAndRotation) error {
+	oldX, oldY, oldZ := entity.Position()
+
+	newX := (float64(pk.DeltaX) + (oldX * 4096)) / 4096
+	newY := (float64(pk.DeltaZ) + (oldY * 4096)) / 4096
+	newZ := (float64(pk.DeltaZ) + (oldZ * 4096)) / 4096
+
+	return session.conn.WritePacket(&packet.MovePlayer{
+		EntityRuntimeID: uint64(entity.EntityId()),
+		Yaw:             util.AngleToDegrees(pk.Yaw),
+		Pitch:           util.AngleToDegrees(pk.Pitch),
+		HeadYaw:         util.AngleToDegrees(pk.Yaw),
+		OnGround:        pk.OnGround,
+		Position:        mgl32.Vec3{float32(newX), float32(newY), float32(newZ)},
+	})
 }
 
-func (session *BedrockSession) UpdateEntityRotation(*play.UpdateEntityRotation) error {
-	return nil
+func (session *BedrockSession) UpdateEntityRotation(entity entity.Entity, pk *play.UpdateEntityRotation) error {
+	x, y, z := entity.Position()
+	return session.conn.WritePacket(&packet.MovePlayer{
+		EntityRuntimeID: uint64(entity.EntityId()),
+		Yaw:             util.AngleToDegrees(pk.Yaw),
+		Pitch:           util.AngleToDegrees(pk.Pitch),
+		HeadYaw:         util.AngleToDegrees(pk.Yaw),
+		OnGround:        pk.OnGround,
+		Position:        mgl32.Vec3{float32(x), float32(y), float32(z)},
+	})
 }
 
 func (session *BedrockSession) Username() string {
 	return session.conn.IdentityData().DisplayName
+}
+
+func (session *BedrockSession) UpdateTime(int64, int64) error {
+	return nil
 }
 
 var _ session.Session = (*BedrockSession)(nil)
