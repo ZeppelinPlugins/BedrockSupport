@@ -36,7 +36,7 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 
 	uuid, _ := uuid.Parse(conn.IdentityData().Identity)
 
-	player := player.NewPlayer(id, srv.World.NewPlayerData(uuid))
+	player := player.New(id, srv.World.NewPlayerData(uuid))
 
 	session := &BedrockSession{
 		conn:   conn,
@@ -89,19 +89,12 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 			srv.Broadcast.BroadcastPlayerMovement(session, x, y, z, yaw, pitch)
 			session.player.SetPosition(x, y, z)
 			session.player.SetRotation(yaw, pitch)
+		case *packet.PlayerAction:
+			handlePlayerAction(session, pk)
 		case *packet.Animate:
-			var animation byte
-			switch pk.ActionType {
-			case packet.AnimateActionSwingArm:
-				animation = play.AnimationSwingMainArm
-			case packet.AnimateActionStopSleep:
-				animation = play.AnimationLeaveBed
-			case packet.AnimateActionCriticalHit:
-				animation = play.AnimationCriticalEffect
-			case packet.AnimateActionMagicCriticalHit:
-				animation = play.AnimationMagicCriticalEffect
-			}
-			srv.Broadcast.Animation(session, animation)
+			handleAnimate(session, pk)
+		case *packet.CommandRequest:
+			session.srv.CommandManager.Call(pk.CommandLine[1:], session)
 		default:
 			log.Printlnf("0x%02x %T", p.ID(), p)
 		}
@@ -170,20 +163,7 @@ func (session *BedrockSession) EntityAnimation(entityId int32, animation byte) e
 }
 
 func (session *BedrockSession) EntityMetadata(entityId int32, meta metadata.Metadata) error {
-	md := protocol.NewEntityMetadata()
-	base := meta[metadata.BaseIndex].(metadata.Byte)
-	if base&metadata.IsOnFire != 0 {
-		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagOnFire)
-	}
-	if base&metadata.IsCrouching != 0 {
-		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
-	}
-	if base&metadata.IsSprinting != 0 {
-		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSprinting)
-	}
-	if base&metadata.IsSwimming != 0 {
-		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSwimming)
-	}
+	md := javaMDtoBedrockMD(meta)
 
 	return session.conn.WritePacket(&packet.SetActorData{
 		EntityRuntimeID: uint64(entityId),
@@ -221,7 +201,7 @@ func (session *BedrockSession) DisguisedChatMessage(message text.TextComponent, 
 func (session *BedrockSession) SystemMessage(message text.TextComponent) error {
 	return session.conn.WritePacket(&packet.Text{
 		TextType: packet.TextTypeRaw,
-		Message:  message.Text,
+		Message:  text.Marshal(message, '§'),
 	})
 }
 
