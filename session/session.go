@@ -17,27 +17,32 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-	"github.com/zeppelinmc/zeppelin/atomic"
-	"github.com/zeppelinmc/zeppelin/log"
-	"github.com/zeppelinmc/zeppelin/net/metadata"
-	"github.com/zeppelinmc/zeppelin/net/packet/login"
-	"github.com/zeppelinmc/zeppelin/net/packet/play"
+	"github.com/zeppelinmc/zeppelin/protocol/net/metadata"
+	"github.com/zeppelinmc/zeppelin/protocol/net/packet/configuration"
+	"github.com/zeppelinmc/zeppelin/protocol/net/packet/login"
+	"github.com/zeppelinmc/zeppelin/protocol/net/packet/play"
+	"github.com/zeppelinmc/zeppelin/protocol/properties"
+	"github.com/zeppelinmc/zeppelin/protocol/text"
 	"github.com/zeppelinmc/zeppelin/server"
-	"github.com/zeppelinmc/zeppelin/server/config"
 	"github.com/zeppelinmc/zeppelin/server/entity"
 	"github.com/zeppelinmc/zeppelin/server/player"
 	"github.com/zeppelinmc/zeppelin/server/session"
-	"github.com/zeppelinmc/zeppelin/server/world/region"
-	"github.com/zeppelinmc/zeppelin/text"
+	"github.com/zeppelinmc/zeppelin/server/world/block/pos"
+	"github.com/zeppelinmc/zeppelin/server/world/chunk"
+	"github.com/zeppelinmc/zeppelin/server/world/chunk/section"
+	"github.com/zeppelinmc/zeppelin/server/world/dimension"
+	"github.com/zeppelinmc/zeppelin/server/world/dimension/window"
+	"github.com/zeppelinmc/zeppelin/server/world/level"
 	"github.com/zeppelinmc/zeppelin/util"
+	"github.com/zeppelinmc/zeppelin/util/atomic"
+	"github.com/zeppelinmc/zeppelin/util/log"
 )
 
 func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
-	id := srv.NewEntityId()
-
 	uuid, _ := uuid.Parse(conn.IdentityData().Identity)
 
-	player := player.New(id, srv.World.NewPlayerData(uuid))
+	player := srv.Players.New(srv.World.NewPlayerData(uuid))
+	id := player.EntityId()
 
 	session := &BedrockSession{
 		conn:   conn,
@@ -79,22 +84,22 @@ func HandleNewConn(srv *server.Server, conn *minecraft.Conn) {
 
 	session.initializeCommands()
 
-	srv.Broadcast.AddPlayer(session)
-	srv.Broadcast.SpawnPlayer(session)
+	srv.World.Broadcast.AddPlayer(session)
+	srv.World.Broadcast.SpawnPlayer(session)
 
 	for {
 		p, err := conn.ReadPacket()
 		if err != nil {
-			srv.Broadcast.RemovePlayer(session)
+			srv.World.Broadcast.RemovePlayer(session)
 			return
 		}
 		switch pk := p.(type) {
 		case *packet.Text:
-			srv.Broadcast.DisguisedChatMessage(session, text.TextComponent{Text: pk.Message})
+			srv.World.Broadcast.DisguisedChatMessage(session, text.TextComponent{Text: pk.Message})
 		case *packet.MovePlayer:
 			x, y, z := float64(pk.Position.X()), float64(pk.Position.Y()), float64(pk.Position.Z())
 			yaw, pitch := pk.Yaw, pk.Pitch
-			srv.Broadcast.BroadcastPlayerMovement(session, x, y, z, yaw, pitch)
+			srv.World.Broadcast.BroadcastPlayerMovement(session, x, y, z, yaw, pitch)
 			session.player.SetPosition(x, y, z)
 			session.player.SetRotation(yaw, pitch)
 		case *packet.PlayerAction:
@@ -128,11 +133,21 @@ type BedrockSession struct {
 	spawned_ents_mu sync.Mutex
 }
 
+func (session *BedrockSession) ClientInformation() configuration.ClientInformation {
+	return configuration.ClientInformation{
+		Locale:             session.conn.ClientData().LanguageCode,
+		ViewDistance:       int8(session.srv.Properties().ViewDistance),
+		AllowServerListing: true,
+		MainHand:           1,
+		ChatColors:         true,
+	}
+}
+
 func (session *BedrockSession) Addr() net.Addr {
 	return session.conn.RemoteAddr()
 }
 
-func (session *BedrockSession) Dimension() *region.Dimension {
+func (session *BedrockSession) Dimension() *dimension.Dimension {
 	return session.srv.World.Dimension(session.player.Dimension())
 }
 
@@ -140,8 +155,8 @@ func (session *BedrockSession) ClientName() string {
 	return "vanilla-bedrock"
 }
 
-func (session *BedrockSession) Config() config.ServerConfig {
-	return session.srv.Config()
+func (session *BedrockSession) Config() properties.ServerProperties {
+	return session.srv.Properties()
 }
 
 func (session *BedrockSession) DespawnEntities(ids ...int32) error {
@@ -271,7 +286,7 @@ func (session *BedrockSession) PlayerInfoUpdate(pk *play.PlayerInfoUpdate) error
 	}
 
 	for uuid, player := range pk.Players {
-		ses, ok := session.srv.Broadcast.AsyncSession(uuid)
+		ses, ok := session.srv.World.Broadcast.AsyncSession(uuid)
 		if !ok {
 			continue
 		}
@@ -462,6 +477,58 @@ func (session *BedrockSession) initializeCommands() {
 	session.conn.WritePacket(&packet.AvailableCommands{
 		Commands: commands,
 	})
+}
+
+func (session *BedrockSession) BlockAction(*play.BlockAction) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) Broadcast() *session.Broadcast {
+	return session.srv.World.Broadcast
+}
+
+func (session *BedrockSession) DamageEvent(attacker, attacked session.Session, damageType string) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) DeleteMessage(id int32, sig [256]byte) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) Latency() int64 {
+	return session.conn.Latency().Milliseconds()
+}
+
+func (session *BedrockSession) Listed() bool {
+	return true
+}
+
+func (session *BedrockSession) OpenWindow(w *window.Window) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) PlaySound(*play.SoundEffect) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) PlayEntitySound(*play.EntitySoundEffect) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) SetGameMode(level.GameMode) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) SetTickState(tps float32, frozen bool) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) UpdateBlock(pos pos.BlockPosition, b section.Block) error {
+	return nil //TODO
+}
+
+func (session *BedrockSession) UpdateBlockEntity(pos pos.BlockPosition, be chunk.BlockEntity) error {
+	return nil //TODO
 }
 
 var _ session.Session = (*BedrockSession)(nil)

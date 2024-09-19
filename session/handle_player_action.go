@@ -3,7 +3,7 @@ package session
 import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-	"github.com/zeppelinmc/zeppelin/net/metadata"
+	"github.com/zeppelinmc/zeppelin/protocol/net/metadata"
 )
 
 func handlePlayerAction(s *BedrockSession, action *packet.PlayerAction) {
@@ -33,5 +33,5 @@ func handlePlayerAction(s *BedrockSession, action *packet.PlayerAction) {
 		}
 	}
 
-	s.srv.Broadcast.EntityMetadata(s, md)
+	s.srv.World.Broadcast.EntityMetadata(s, md)
 }

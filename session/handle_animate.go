@@ -2,7 +2,7 @@ package session
 
 import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-	"github.com/zeppelinmc/zeppelin/net/packet/play"
+	"github.com/zeppelinmc/zeppelin/protocol/net/packet/play"
 )
 
 func handleAnimate(s *BedrockSession, animate *packet.Animate) {
@@ -17,5 +17,5 @@ func handleAnimate(s *BedrockSession, animate *packet.Animate) {
 	case packet.AnimateActionMagicCriticalHit:
 		animation = play.AnimationMagicCriticalEffect
 	}
-	s.srv.Broadcast.Animation(s, animation)
+	s.srv.World.Broadcast.Animation(s, animation)
 }

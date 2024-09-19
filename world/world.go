@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"sync"
 
-	"github.com/zeppelinmc/zeppelin/server/world/region"
+	"github.com/zeppelinmc/zeppelin/server/world/chunk"
 )
 
 /*func chunkBlocks(chunk *region.Chunk, sec int) []Block {
@@ -32,7 +32,7 @@ var chunkDataPool = sync.Pool{
 	New: func() any { return bytes.NewBuffer(nil) },
 }
 
-func EncodeChunkData(chunk *region.Chunk) []byte {
+func EncodeChunkData(chunk *chunk.Chunk) []byte {
 	w := chunkDataPool.Get().(*bytes.Buffer)
 	w.Reset()
 	defer chunkDataPool.Put(w)

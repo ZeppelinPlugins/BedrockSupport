@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
-	"github.com/zeppelinmc/zeppelin/net/packet/login"
+	"github.com/zeppelinmc/zeppelin/protocol/net/packet/login"
 )
 
 func getSkin(xuid string) (login.Property, error) {

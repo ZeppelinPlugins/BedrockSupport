@@ -2,7 +2,7 @@ package session
 
 import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
-	"github.com/zeppelinmc/zeppelin/net/metadata"
+	"github.com/zeppelinmc/zeppelin/protocol/net/metadata"
 )
 
 func javaMDtoBedrockMD(meta metadata.Metadata) protocol.EntityMetadata {
